@@ -7,6 +7,7 @@ use mirrord_sessions_manager_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
+use url::Url;
 
 use crate::{
     client::validate_scope,
@@ -50,10 +51,13 @@ pub struct IntproxyClient<T = DirectTransport> {
 }
 
 impl IntproxyClient<DirectTransport> {
+    /// Connects through the standalone sessions-manager at `base_url`.
     pub fn new(
         connect_info: SessionsManagerConnectInfo,
+        base_url: Url,
     ) -> Result<Self, SessionsManagerClientError> {
-        let transport = DirectTransport::intproxy_from_env(connect_info.login_token.as_ref())?;
+        let transport =
+            DirectTransport::intproxy_from_env(base_url, connect_info.login_token.as_ref())?;
         Self::with_transport(connect_info, transport)
     }
 }

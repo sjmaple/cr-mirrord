@@ -27,14 +27,18 @@ use mirrord_progress::{
     utm_medium,
 };
 use mirrord_sessions_manager_client::{
-    LoginToken, ServiceScope, SessionsManagerConnectInfo, cloud_url_from_env,
+    EndpointSource, LoginToken, ServiceScope, SessionsManagerClientError,
+    SessionsManagerConnectInfo, SessionsManagerEndpoint, cloud_url_from_env,
 };
 use tracing::Level;
 
 use crate::{
     CliError, CliResult, MirrordCi,
     ci::error::CiError,
-    connector::{AgentConnector, DirectConnector, OperatorConnector, SessionsManagerConnector},
+    connector::{
+        AgentConnector, DirectConnector, OperatorConnector, SessionsManagerConnector,
+        SessionsManagerRoute,
+    },
     data::{AuthStore, GlobalConfig},
     up::MirrordUp,
 };
@@ -354,6 +358,22 @@ async fn standalone_login_token<P: Progress>(progress: &P) -> CliResult<Option<L
     Ok(token)
 }
 
+/// The standalone sessions-manager a serverless session connects through: the one at
+/// `sessions_manager.url`, or the MetalBear Cloud one when that is unset. [`None`] when
+/// `operator` is `true`, which selects the sessions-manager hosted by the operator instead.
+///
+/// `sessions_manager.url` already holds `MIRRORD_SESSIONS_MANAGER_URL` when that is set, since
+/// it overrides the config file like every other option's environment variable.
+fn standalone_sessions_manager(
+    config: &LayerConfig,
+) -> Result<Option<SessionsManagerEndpoint>, SessionsManagerClientError> {
+    if config.operator == Some(true) {
+        return Ok(None);
+    }
+
+    SessionsManagerEndpoint::resolve(config.sessions_manager.url.as_deref()).map(Some)
+}
+
 /// 1. if [`LayerConfig`] targets Serverless, makes a connection to an existing agent through
 ///    mirrord-sessions-manager-client.
 /// 2. If mirrord-operator is explicitly enabled in the given [`LayerConfig`], makes a connection
@@ -392,21 +412,45 @@ pub(crate) async fn create_and_connect<R: Reporter>(
             replica_filter: agent_replica_filter.map(Into::into),
             login_token: None,
         };
-        let (operator_client, agent_connect_info) = if config.operator == Some(true) {
-            (
-                Some(operator_sessions_manager_client(config, progress, analytics).await?),
+        let standalone =
+            standalone_sessions_manager(config).map_err(CliError::SessionsManagerUrl)?;
+        let message = match &standalone {
+            None => "Connecting through the sessions-manager hosted by the mirrord operator, \
+                     because `operator` is `true`"
+                .to_owned(),
+            Some(endpoint) => match endpoint.source {
+                EndpointSource::Explicit => format!(
+                    "Connecting through the sessions-manager at {}, set by \
+                     `sessions_manager.url` or MIRRORD_SESSIONS_MANAGER_URL",
+                    endpoint.url
+                ),
+                EndpointSource::Default => format!(
+                    "Connecting through the MetalBear Cloud sessions-manager at {}",
+                    endpoint.url
+                ),
+            },
+        };
+        tracing::info!("{message}");
+        progress.info(&message);
+
+        let (route, agent_connect_info) = match standalone {
+            None => (
+                SessionsManagerRoute::Operator(
+                    operator_sessions_manager_client(config, progress, analytics).await?,
+                ),
                 AgentConnectInfo::OperatorSessionsManager(connect_info.clone()),
-            )
-        } else {
-            connect_info.login_token = standalone_login_token(progress).await?;
-            (
-                None,
-                AgentConnectInfo::SessionsManager(connect_info.clone()),
-            )
+            ),
+            Some(endpoint) => {
+                connect_info.login_token = standalone_login_token(progress).await?;
+                (
+                    SessionsManagerRoute::Standalone(endpoint),
+                    AgentConnectInfo::SessionsManager(connect_info.clone()),
+                )
+            }
         };
         let connector = AgentConnector::SessionsManager(SessionsManagerConnector {
             connect_info,
-            operator_client,
+            route,
         });
 
         return Ok(ConnectData {
@@ -693,12 +737,65 @@ mod tests {
     use mirrord_config::{
         LayerFileConfig,
         config::{ConfigContext, MirrordConfig},
+        sessions_manager::SessionsManagerFileConfig,
         target::{Target, TargetFileConfig, pod::PodTarget, service::ServiceTarget},
     };
     use mirrord_progress::NullProgress;
+    use mirrord_sessions_manager_client::{EndpointSource, SESSIONS_MANAGER_URL_DEFAULT};
     use rstest::rstest;
 
-    use crate::connection::process_config_oss;
+    use crate::connection::{process_config_oss, standalone_sessions_manager};
+
+    const FILE_URL: &str = "https://file.example.com/sm";
+    const ENV_URL: &str = "https://env.example.com/sm";
+
+    /// A serverless session connects through the operator when `operator` is `true`, then
+    /// through `sessions_manager.url`, which `MIRRORD_SESSIONS_MANAGER_URL` overrides, and then
+    /// through the MetalBear Cloud sessions-manager.
+    #[rstest]
+    #[case::operator(Some(true), Some(FILE_URL), Some(ENV_URL), None)]
+    #[case::config_file(None, Some(FILE_URL), None, Some((FILE_URL, EndpointSource::Explicit)))]
+    #[case::env(None, None, Some(ENV_URL), Some((ENV_URL, EndpointSource::Explicit)))]
+    #[case::env_overrides_config_file(
+        Some(false),
+        Some(FILE_URL),
+        Some(ENV_URL),
+        Some((ENV_URL, EndpointSource::Explicit))
+    )]
+    #[case::metalbear_cloud(
+        None,
+        None,
+        None,
+        Some((SESSIONS_MANAGER_URL_DEFAULT, EndpointSource::Default))
+    )]
+    fn sessions_manager_precedence(
+        #[case] operator: Option<bool>,
+        #[case] file_url: Option<&str>,
+        #[case] env_url: Option<&str>,
+        #[case] expected: Option<(&str, EndpointSource)>,
+    ) {
+        let mut cfg_context = ConfigContext::default()
+            .override_env_opt("MIRRORD_SESSIONS_MANAGER_URL", env_url)
+            .strict_env(true);
+        let config = LayerFileConfig {
+            operator,
+            sessions_manager: Some(SessionsManagerFileConfig {
+                url: file_url.map(ToOwned::to_owned),
+            }),
+            ..Default::default()
+        }
+        .generate_config(&mut cfg_context)
+        .unwrap();
+
+        let endpoint = standalone_sessions_manager(&config).unwrap();
+
+        assert_eq!(
+            endpoint
+                .as_ref()
+                .map(|endpoint| (endpoint.url.as_str(), endpoint.source)),
+            expected
+        );
+    }
 
     /// Ensure that when `process_config_oss` is called, operator-only target types are disallowed.
     /// This occurs when `create_and_connect` fails to establish a connection with the operator.

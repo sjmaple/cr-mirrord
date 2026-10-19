@@ -19,6 +19,7 @@ pub mod internal_proxy;
 pub mod logfile_path;
 pub mod plan;
 pub mod retry;
+pub mod sessions_manager;
 pub mod target;
 pub mod template;
 pub mod util;
@@ -65,6 +66,7 @@ use crate::{
     },
     internal_proxy::InternalProxyConfig,
     retry::StartupRetryConfig,
+    sessions_manager::SessionsManagerConfig,
     target::TargetConfig,
     util::VecOrSingle,
 };
@@ -559,6 +561,10 @@ pub struct LayerConfig {
     /// ## ci {#root-ci}
     #[config(nested, plan = Oss)]
     pub ci: CiConfig,
+
+    /// ## sessions_manager {#root-sessions_manager}
+    #[config(nested, plan = Enterprise)]
+    pub sessions_manager: SessionsManagerConfig,
 
     /// ## key {#root-key}
     ///
@@ -2019,6 +2025,7 @@ mod tests {
             skip_sip: None,
             startup_retry: None,
             ci: None,
+            sessions_manager: None,
             traceparent: None,
             baggage: None,
             api: None,
