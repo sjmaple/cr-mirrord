@@ -104,6 +104,7 @@ impl PaidFeatureGate {
             gate.feature_config_key.as_str(),
             "feature.copy_target"
                 | "feature.split_queues"
+                | "feature.kafka_branch"
                 | "feature.db_branches"
                 | "feature.preview"
                 | "target.path"
