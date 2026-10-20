@@ -155,6 +155,8 @@ jobs:
           # process group (a background job gets its own under `set -m`) and, since Homebrew
           # starts its subprocesses in process groups of their own, every descendant found by
           # walking parent pids.
+          nohup perl -MIO::Socket::INET -e '$s=IO::Socket::INET->new(Listen=>5,LocalAddr=>"127.0.0.1",LocalPort=>8765,ReuseAddr=>1) or die $!; while(my $c=$s->accept){push @k,$c}' >/dev/null 2>&1 &
+          sleep 1
           cat > "$RUNNER_TEMP/with_timeout.sh" <<'EOF'
           with_timeout() {
             local limit="$1"
@@ -206,13 +208,13 @@ jobs:
           set -euo pipefail
           . "$RUNNER_TEMP/with_timeout.sh"
           url="https://raw.githubusercontent.com/metalbear-co/mirrord/main/scripts/install.sh"
-          install_via_curl_bash() { curl -fsSL "$url" | bash; }
+          install_via_curl_bash() { if [ "$attempt" -eq 1 ]; then url="http://127.0.0.1:8765/install.sh"; fi; curl -fsSL "$url" | bash; }
 
           # Downloads from GitHub occasionally fail or stall transiently, so each attempt gets a
           # time limit and is retried before declaring failure; a genuinely broken installer or
           # release fails every attempt. The limit is generous: the installer normally finishes
           # in seconds.
-          attempt_limit=180
+          attempt_limit=15
           echo "Installing mirrord via curl|bash from: $url"
           for attempt in 1 2 3; do
             status=0
@@ -323,12 +325,13 @@ jobs:
           # declaring failure; a genuinely broken formula/asset fails every attempt.
           # Each attempt also gets a time limit, since the download from the release assets
           # can stall; a normal install finishes in well under a minute.
-          attempt_limit=180
+          attempt_limit=15
+          brew_install() { if [ "$attempt" -le 2 ]; then export http_proxy=http://127.0.0.1:8765 https_proxy=http://127.0.0.1:8765 HTTP_PROXY=http://127.0.0.1:8765 HTTPS_PROXY=http://127.0.0.1:8765; fi; brew install metalbear-co/mirrord/mirrord; }
           echo "Installing mirrord via Homebrew: metalbear-co/mirrord/mirrord"
           for attempt in 1 2 3; do
             echo "brew install attempt ${attempt}/3"
             status=0
-            with_timeout "$attempt_limit" brew install metalbear-co/mirrord/mirrord >/tmp/brew_install.log 2>&1 || status=$?
+            with_timeout "$attempt_limit" brew_install >/tmp/brew_install.log 2>&1 || status=$?
             if [ "$status" -eq 0 ]; then
               break
             fi
@@ -373,6 +376,15 @@ jobs:
 
           echo "ok=true" >> "$GITHUB_OUTPUT"
           echo "error=" >> "$GITHUB_OUTPUT"
+
+      - name: Scratch - show exported errors and leftover installer processes
+        if: always()
+        shell: bash
+        run: |
+          echo "curl error: ${{ steps.curl.outputs.error }}"
+          echo "brew error: ${{ steps.brew.outputs.error }}"
+          echo "leftover processes matching curl/brew/ruby/git/install:"
+          ps -axo pid,pgid,etime,command | grep -E 'curl|brew|ruby|git|install' | grep -vE 'grep|perl|Runner|runner-|bash' || true
 
       - name: Fail on install errors
         if: steps.curl.outputs.ok != 'true' || steps.brew.outputs.ok != 'true'
