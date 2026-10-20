@@ -8,6 +8,25 @@ This project uses [*towncrier*](https://towncrier.readthedocs.io/) and the chang
 
 <!-- towncrier release notes start -->
 
+## [3.277.0](https://github.com/metalbear-co/mirrord/tree/3.277.0) - 2026-10-20
+
+
+### Changed
+
+- `mirrord up init` picks each service's namespace and workload from the
+  cluster, follows the flow and wording of `mirrord wizard`, and asks only for
+  what has no good default.
+
+
+### Fixed
+
+- Take the source address of a connection handed off by the remote layer from
+  the transferred socket instead of the address the layer reports.
+- The workload picker of `mirrord up` offers the namespace of the kube context
+  when the user can't list all namespaces, and lists the workloads of the kinds
+  that the user can read. When the user can't read any workload of a namespace,
+  it asks for another namespace.
+
 ## [3.276.0](https://github.com/metalbear-co/mirrord/tree/3.276.0) - 2026-10-19
 
 
