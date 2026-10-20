@@ -1,0 +1,1 @@
+Bound every install attempt in the release monitor so a stalled download fails fast with a message, and make its notifier treat a timed-out run as a failure so consecutive timeouts alert once and recovery is announced.
